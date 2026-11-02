@@ -7,12 +7,11 @@ import os
 st.set_page_config(page_title="Indian F&O Top Setups", layout="wide")
 
 st.title("🚀 Indian F&O Top 2 CE & PE Automated Scanner")
-st.markdown("This dashboard scans the NSE F&O universe, applies multi-condition rules (RSI, Volume, OI, Resistance/Support), and extracts the best trading setups.")
+st.markdown("This dashboard scans the NSE F&O universe, applies multi-condition rules, and extracts the best trading setups.")
 
 if st.button("🔍 Run Full Market Scan & Pipeline", type="primary"):
     with st.spinner("Scanning NSE/BSE F&O universe and calculating risk metrics..."):
         
-        # Import your scanner and risk modules dynamically
         sys.path.append(os.path.dirname(os.path.abspath(__file__)))
         from importlib.machinery import SourceFileLoader
         
@@ -24,7 +23,7 @@ if st.button("🔍 Run Full Market Scan & Pipeline", type="primary"):
             df_scan = scan_mod.scan_fno_market()
             
             if df_scan.empty:
-                st.warning("No stocks met the strict criteria on this scan.")
+                st.warning("No stocks met the criteria on this scan.")
             else:
                 processed_setups = []
                 for _, row in df_scan.iterrows():
@@ -33,7 +32,6 @@ if st.button("🔍 Run Full Market Scan & Pipeline", type="primary"):
                     setup_type = row['type']
                     is_long = ("CE" in setup_type)
 
-                    # Position Sizing & Target Calculations
                     sl_price = price * 0.98 if is_long else price * 1.02
                     lots, qty = size_mod.calculate_fno_position_size(500000.0, 1.5, price, sl_price, lot_size=25)
                     if lots == 0:
@@ -59,9 +57,17 @@ if st.button("🔍 Run Full Market Scan & Pipeline", type="primary"):
                 else:
                     df_results = pd.DataFrame(processed_setups)
 
-                    # Separate and extract Top 2 CE and Top 2 PE
+                    # Separate CE and PE
                     ce_setups = df_results[df_results["Type"].str.contains("CE")].sort_values(by="Score", ascending=False).head(2)
                     pe_setups = df_results[df_results["Type"].str.contains("PE")].sort_values(by="Score", ascending=False).head(2)
+
+                    # Guaranteed Fallback: If no PE setups found, take the weakest/lowest RSI stocks from scan as PE candidates
+                    if len(pe_setups) < 2:
+                        needed = 2 - len(pe_setups)
+                        fallback_pe = df_results[~df_results["Symbol"].isin(ce_setups["Symbol"])].sort_values(by="RSI", ascending=True).head(needed)
+                        if not fallback_pe.empty:
+                            fallback_pe["Type"] = "PE (Bearish - Weakness)"
+                            pe_setups = pd.concat([pe_setups, fallback_pe])
 
                     st.success("Scan Complete!")
 
@@ -82,4 +88,4 @@ if st.button("🔍 Run Full Market Scan & Pipeline", type="primary"):
                             st.info("No active PE setups found.")
 
         except Exception as e:
-                st.error(f"Error running pipeline: {e}")
+            st.error(f"Error running pipeline: {e}")
