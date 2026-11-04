@@ -62,12 +62,43 @@ if st.button("🔍 Run Full Market Scan & Pipeline", type="primary"):
                     pe_setups = df_results[df_results["Type"].str.contains("PE")].sort_values(by="Score", ascending=False).head(2)
 
                     # Guaranteed Fallback: If no PE setups found, take the weakest/lowest RSI stocks from scan as PE candidates
+                    # Fallback PE: build genuine SHORT setups from the lowest-RSI scan rows
+                    # (target below entry, stop above entry), not relabelled CE trades.
+                    def build_fallback_short(row):
+                        price = row['price']
+                        sl_price = price * 1.02
+                        lots, qty = size_mod.calculate_fno_position_size(500000.0, 1.5, price, sl_price, lot_size=25)
+                        if lots == 0:
+                            return None
+                        targets = exit_mod.calculate_exit_targets(entry_price=price, is_long=False, atr=price * 0.015)
+                        return {
+                            "Symbol": row['symbol'],
+                            "Type": "PE (Bearish - Weakness)",
+                            "LTP (₹)": price,
+                            "Change %": row['price_change_pct'],
+                            "RSI": row['rsi'],
+                            "Score": row['score'],
+                            "Approved Lots": lots,
+                            "Total Qty": qty,
+                            "Target (₹)": targets["target"],
+                            "Stop Loss (₹)": targets["stop_loss"]
+                        }
+
                     if len(pe_setups) < 2:
                         needed = 2 - len(pe_setups)
-                        fallback_pe = df_results[~df_results["Symbol"].isin(ce_setups["Symbol"])].sort_values(by="RSI", ascending=True).head(needed)
-                        if not fallback_pe.empty:
-                            fallback_pe["Type"] = "PE (Bearish - Weakness)"
-                            pe_setups = pd.concat([pe_setups, fallback_pe])
+                        used = set(ce_setups["Symbol"]) | set(pe_setups["Symbol"])
+                        fallback_setups = []
+                        for _, row in df_scan.sort_values(by="rsi", ascending=True).iterrows():
+                            if len(fallback_setups) >= needed:
+                                break
+                            if row['symbol'] in used:
+                                continue
+                            setup = build_fallback_short(row)
+                            if setup is not None:
+                                fallback_setups.append(setup)
+                                used.add(row['symbol'])
+                        if fallback_setups:
+                            pe_setups = pd.concat([pe_setups, pd.DataFrame(fallback_setups)])
 
                     st.success("Scan Complete!")
 

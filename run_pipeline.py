@@ -27,26 +27,22 @@ def run_fno_trading_pipeline():
         print(" -> No stocks met market filters today.")
         return
 
-    processed_setups = []
-
-    for _, row in df_scan.iterrows():
+    def build_setup(row, is_long, setup_type):
         symbol = row['symbol']
         price = row['price']
-        setup_type = row['type']
-        is_long = ("CE" in setup_type)
 
         risk_check = check_fno_risk_limits(500000.0, 1000.0, 15000.0, 100000.0)
         if not risk_check["approved"]:
-            continue
+            return None
 
         sl_price = price * 0.98 if is_long else price * 1.02
         lots, qty = calculate_fno_position_size(500000.0, 1.5, price, sl_price, lot_size=25)
         if lots == 0:
-            continue
+            return None
 
         targets = calculate_exit_targets(entry_price=price, is_long=is_long, atr=price * 0.015)
 
-        processed_setups.append({
+        return {
             "Symbol": symbol,
             "Type": setup_type,
             "LTP (₹)": price,
@@ -56,7 +52,14 @@ def run_fno_trading_pipeline():
             "Total Qty": qty,
             "Target (₹)": targets["target"],
             "Stop Loss (₹)": targets["stop_loss"]
-        })
+        }
+
+    processed_setups = []
+    for _, row in df_scan.iterrows():
+        is_long = ("CE" in row['type'])
+        setup = build_setup(row, is_long, row['type'])
+        if setup is not None:
+            processed_setups.append(setup)
 
     if not processed_setups:
         print("No setups passed the sizing & risk framework.")
@@ -71,12 +74,23 @@ def run_fno_trading_pipeline():
     top_2_ce = ce_setups.head(2)
     top_2_pe = pe_setups.head(2)
 
-    # Fallback if PE count is less than 2: pull lowest RSI stocks from scan to fill the 2 PE slots
+    # Fallback if PE count is less than 2: take the lowest-RSI stocks from the scan and
+    # build them as genuine SHORT (bearish) setups, so target is below and stop is above entry.
     if len(top_2_pe) < 2:
-        remaining_needed = 2 - len(top_2_pe)
-        df_fallback_pe = df_results[~df_results["Symbol"].isin(top_2_pe["Symbol"])].sort_values(by="RSI", ascending=True).head(remaining_needed)
-        df_fallback_pe["Type"] = "PE (Bearish - Fallback)"
-        top_2_pe = pd.concat([top_2_pe, df_fallback_pe])
+        needed = 2 - len(top_2_pe)
+        used = set(top_2_ce["Symbol"]) | set(top_2_pe["Symbol"])
+        fallback_setups = []
+        for _, row in df_scan.sort_values(by="rsi", ascending=True).iterrows():
+            if len(fallback_setups) >= needed:
+                break
+            if row['symbol'] in used:
+                continue
+            setup = build_setup(row, False, "PE (Bearish - Fallback)")
+            if setup is not None:
+                fallback_setups.append(setup)
+                used.add(row['symbol'])
+        if fallback_setups:
+            top_2_pe = pd.concat([top_2_pe, pd.DataFrame(fallback_setups)])
 
     final_top_4 = pd.concat([top_2_ce, top_2_pe]).reset_index(drop=True)
 
